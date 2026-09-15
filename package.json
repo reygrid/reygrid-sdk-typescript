@@ -1,0 +1,39 @@
+{
+  "name": "reygrid",
+  "version": "1.0.2",
+  "description": "Powerful, typed TypeScript client for the ReyGrid API with full base URL control, SSE streaming, tool calls, and pagination.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "reygrid",
+    "api",
+    "client",
+    "sdk",
+    "agent",
+    "chat",
+    "sse"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "json5": "^2.2.3"
+  }
+}
