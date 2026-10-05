@@ -13,6 +13,9 @@
 - **Tool calling** — define agent tools and submit results
 - **Pagination helpers** — `Paginator<T>` with async iterator for easy pagination
 - **Conversation management** — list, read, delete conversations and messages
+- **Knowledge management** — add text, Q&A, files and websites; list and delete sources
+- **Search** — retrieve the closest knowledge passages without generating an answer
+- **Agents, models & usage** — list and update agents, see models and your usage report
 - **Rich error hierarchy** — typed errors per status code
 - **Universal** — works in Node.js ≥18, Deno, Bun, and modern browsers (no dependencies)
 
@@ -158,6 +161,73 @@ await client.deleteConversation("agent-id", "conversation-uuid");
 await client.deleteMessage("agent-id", "convo-uuid", "msg-uuid", true);
 ```
 
+## Agents
+
+```typescript
+const { agents } = await client.listAgents();
+
+const { agent } = await client.getAgent("agent-id");
+console.log(agent.sources, agent.storage); // { text, qa, file, website }, { used, limit }
+
+await client.updateAgent("agent-id", { instructions: "Answer in a friendly tone." });
+```
+
+## Knowledge
+
+```typescript
+import { openAsBlob } from "node:fs";
+
+await client.addTextSource("agent-id", {
+  title: "Refund policy",
+  content: "Orders can be refunded within 30 days of delivery.",
+});
+
+await client.addQaSource("agent-id", {
+  question: "Do you ship abroad?",
+  answer: "Yes, to 40 countries. Delivery takes 5 to 10 days.",
+});
+
+// PDF, DOC, DOCX or TXT, up to 30 MB
+await client.uploadFile("agent-id", await openAsBlob("handbook.pdf"), "handbook.pdf");
+
+// Crawls pages on the same domain; returns when done
+const { pagesCrawled } = await client.crawlWebsite("agent-id", "https://docs.example.com");
+
+// List (filter by type / search) and delete
+const { sources } = await client.listSources("agent-id", { type: "text", search: "refund" });
+await client.deleteSource("agent-id", sources[0].id);
+
+// Every source, page by page
+const all = await client.paginateSources("agent-id", { type: "file" }).all();
+```
+
+## Search
+
+Retrieval only: the closest passages from the agent's knowledge, no model call and no credits.
+
+```typescript
+const { results } = await client.search("agent-id", "How do I get a refund?", { limit: 3 });
+for (const r of results) console.log(r.score, r.source.title, r.content);
+```
+
+## Feedback
+
+```typescript
+await client.rateMessage("agent-id", "conversation-id", "msg_abc123", {
+  rating: "down",
+  comment: "The shipping times are out of date",
+});
+```
+
+## Models & usage
+
+```typescript
+const { models } = await client.listModels(); // { id, name, provider, pricing, available }
+
+const report = await client.getUsageReport({ days: 7 });
+console.log(report.balance.credits, report.totals.requests, report.daily);
+```
+
 ## Error Handling
 
 ```typescript
@@ -167,6 +237,8 @@ import {
   ReyGridAuthError,
   ReyGridValidationError,
   ReyGridNotFoundError,
+  ReyGridPermissionError,
+  ReyGridRateLimitError,
   ReyGridNetworkError,
   ReyGridStreamError,
 } from "reygrid";
@@ -176,8 +248,10 @@ try {
 } catch (err) {
   if (err instanceof ReyGridAuthError) {
     console.error("Invalid API key!");
+  } else if (err instanceof ReyGridPermissionError) {
+    console.error("Not allowed:", err.code); // e.g. PLAN_LIMIT_REACHED, AGENT_NOT_ALLOWED
   } else if (err instanceof ReyGridApiError) {
-    console.error(`API error: ${err.statusCode} — ${err.message}`);
+    console.error(`API error: ${err.statusCode} ${err.code} — ${err.message}`);
   } else {
     console.error(err);
   }
@@ -197,6 +271,19 @@ try {
 | `/agents/{id}/conversations/{ref}`                  | DELETE | `client.deleteConversation()` |
 | `/agents/{id}/conversations/{ref}/messages/{id}`    | DELETE | `client.deleteMessage()`      |
 | `/agents/{id}/conversations/{ref}/tool/cancel/{id}` | POST   | `client.cancelToolCall()`     |
+| `/agents/{id}/conversations/{ref}/messages/{id}/feedback` | POST | `client.rateMessage()` |
+| `/agents`                                           | GET    | `client.listAgents()`         |
+| `/agents/{id}`                                      | GET    | `client.getAgent()`           |
+| `/agents/{id}`                                      | PATCH  | `client.updateAgent()`        |
+| `/agents/{id}/sources`                              | GET    | `client.listSources()` / `paginateSources()` |
+| `/agents/{id}/sources/text`                         | POST   | `client.addTextSource()`      |
+| `/agents/{id}/sources/qa`                           | POST   | `client.addQaSource()`        |
+| `/agents/{id}/sources/files`                        | POST   | `client.uploadFile()`         |
+| `/agents/{id}/sources/website`                      | POST   | `client.crawlWebsite()`       |
+| `/agents/{id}/sources/{sourceId}`                   | DELETE | `client.deleteSource()`       |
+| `/agents/{id}/search`                               | POST   | `client.search()`             |
+| `/models`                                           | GET    | `client.listModels()`         |
+| `/usage`                                            | GET    | `client.getUsageReport()`     |
 
 ## Development
 

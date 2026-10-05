@@ -13,7 +13,22 @@ import {
 import { Paginator } from "./pagination.js";
 import { parseSSEStream } from "./sse.js";
 import type {
+  AgentDetailResponse,
+  AgentResponse,
+  AgentsResponse,
+  AgentUpdate,
   CancelToolResponse,
+  CrawlResponse,
+  DeleteSourceResponse,
+  FeedbackRating,
+  FeedbackResponse,
+  ListSourcesOptions,
+  ModelsResponse,
+  SearchResponse,
+  Source,
+  SourceCreatedResponse,
+  SourcesResponse,
+  UsageReport,
   ChatDeltaEvent,
   ChatRequest,
   ChatResponse,
@@ -29,6 +44,19 @@ import type {
 } from "./types.js";
 
 export const DEFAULT_BASE_URL = "https://reygrid.com/api/v1";
+
+// File uploads and website crawls are indexed before the API responds.
+const LONG_TIMEOUT_MS = 10 * 60_000;
+
+const CONTENT_TYPES: Record<string, string> = {
+  pdf: "application/pdf",
+  txt: "text/plain",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+};
+
+const contentTypeOf = (filename: string) =>
+  CONTENT_TYPES[filename.split(".").pop()?.toLowerCase() ?? ""] ?? "application/octet-stream";
 
 export interface ReyGridConfig {
   /**
@@ -128,7 +156,7 @@ export class ReyGrid {
     const requestInit: RequestInit = {
       ...init,
       signal: init.signal ?? ctrl.signal,
-      headers: this.buildHeaders(init.headers),
+      headers: this.buildHeaders(init.headers, init.body instanceof FormData),
     };
 
     const context: RequestContext = {
@@ -163,7 +191,7 @@ export class ReyGrid {
     return (await res.text()) as unknown as T;
   }
 
-  private buildHeaders(existing?: HeadersInit): Headers {
+  private buildHeaders(existing?: HeadersInit, multipart = false): Headers {
     const h = new Headers();
     for (const [k, v] of Object.entries(this.headers)) h.set(k, v);
     if (existing) {
@@ -171,7 +199,8 @@ export class ReyGrid {
       tmp.forEach((value, key) => h.set(key, value));
     }
     if (!h.has("Accept")) h.set("Accept", "application/json");
-    if (!h.has("Content-Type")) h.set("Content-Type", "application/json");
+    if (multipart) h.delete("Content-Type");
+    else if (!h.has("Content-Type")) h.set("Content-Type", "application/json");
     if (this.apiKey) h.set("Authorization", `Bearer ${this.apiKey}`);
     return h;
   }
@@ -207,7 +236,7 @@ export class ReyGrid {
     return this.request<ValidateResponse>("/validate");
   }
 
-  /** Convenience: resolve the current usage / quota. */
+  /** Convenience: usage / quota of this API key. For account usage see `getUsageReport()`. */
   async getUsage(): Promise<Usage> {
     const v = await this.validate();
     return v.usage;
@@ -396,6 +425,170 @@ export class ReyGrid {
       `/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationRef)}/tool/cancel/${encodeURIComponent(toolCallId)}`,
       { method: "POST" },
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Agents
+  // -------------------------------------------------------------------------
+
+  /** List the agents this API key can use. */
+  async listAgents(): Promise<AgentsResponse> {
+    return this.request<AgentsResponse>("/agents");
+  }
+
+  /** Get an agent, with its source counts and storage usage. */
+  async getAgent(agentId: string): Promise<AgentDetailResponse> {
+    return this.request<AgentDetailResponse>(`/agents/${encodeURIComponent(agentId)}`);
+  }
+
+  /** Update an agent's name, instructions or model. */
+  async updateAgent(agentId: string, update: AgentUpdate): Promise<AgentResponse> {
+    return this.request<AgentResponse>(`/agents/${encodeURIComponent(agentId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(update),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Knowledge sources
+  // -------------------------------------------------------------------------
+
+  /** List an agent's knowledge sources, newest first. */
+  async listSources(agentId: string, opts: ListSourcesOptions = {}): Promise<SourcesResponse> {
+    const qs = this.queryString({ ...opts });
+    return this.request<SourcesResponse>(`/agents/${encodeURIComponent(agentId)}/sources${qs}`);
+  }
+
+  /** Paginate through all of an agent's sources. */
+  paginateSources(
+    agentId: string,
+    opts: Omit<ListSourcesOptions, "page" | "size"> & { size?: number } = {},
+  ): Paginator<Source> {
+    const { size = 20, ...filters } = opts;
+    return new Paginator<Source>(
+      (page, pageSize) =>
+        this.listSources(agentId, { ...filters, page, size: pageSize }).then((r) => ({
+          data: r.sources,
+          pagination: r.pagination,
+        })),
+      size,
+    );
+  }
+
+  /** Add a titled piece of text. */
+  async addTextSource(
+    agentId: string,
+    source: { title: string; content: string },
+  ): Promise<SourceCreatedResponse> {
+    return this.request<SourceCreatedResponse>(`/agents/${encodeURIComponent(agentId)}/sources/text`, {
+      method: "POST",
+      body: JSON.stringify(source),
+    });
+  }
+
+  /** Add a question and its exact answer. */
+  async addQaSource(
+    agentId: string,
+    source: { question: string; answer: string },
+  ): Promise<SourceCreatedResponse> {
+    return this.request<SourceCreatedResponse>(`/agents/${encodeURIComponent(agentId)}/sources/qa`, {
+      method: "POST",
+      body: JSON.stringify(source),
+    });
+  }
+
+  /**
+   * Upload a PDF, DOC, DOCX or TXT file (up to 30 MB).
+   *
+   * @example
+   * ```ts
+   * import { openAsBlob } from "node:fs";
+   * await client.uploadFile("agent-1", await openAsBlob("handbook.pdf"), "handbook.pdf");
+   * ```
+   */
+  async uploadFile(
+    agentId: string,
+    file: Blob | ArrayBuffer | Uint8Array,
+    filename: string,
+    opts: { contentType?: string; timeoutMs?: number } = {},
+  ): Promise<SourceCreatedResponse> {
+    // The API checks the content type, so make sure the part has one.
+    const blob =
+      file instanceof Blob && file.type
+        ? file
+        : new Blob([file as BlobPart], { type: opts.contentType ?? contentTypeOf(filename) });
+    const form = new FormData();
+    form.append("file", blob, filename);
+
+    return this.request<SourceCreatedResponse>(`/agents/${encodeURIComponent(agentId)}/sources/files`, {
+      method: "POST",
+      body: form,
+      timeoutMs: opts.timeoutMs ?? LONG_TIMEOUT_MS,
+    });
+  }
+
+  /** Crawl a website and index its pages. Returns when the crawl is done. */
+  async crawlWebsite(
+    agentId: string,
+    url: string,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<CrawlResponse> {
+    return this.request<CrawlResponse>(`/agents/${encodeURIComponent(agentId)}/sources/website`, {
+      method: "POST",
+      body: JSON.stringify({ url }),
+      timeoutMs: opts.timeoutMs ?? LONG_TIMEOUT_MS,
+    });
+  }
+
+  /** Delete a source and everything indexed from it. */
+  async deleteSource(agentId: string, sourceId: string): Promise<DeleteSourceResponse> {
+    return this.request<DeleteSourceResponse>(
+      `/agents/${encodeURIComponent(agentId)}/sources/${encodeURIComponent(sourceId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Search
+  // -------------------------------------------------------------------------
+
+  /** The knowledge passages closest to `query`, without generating an answer. */
+  async search(agentId: string, query: string, opts: { limit?: number } = {}): Promise<SearchResponse> {
+    return this.request<SearchResponse>(`/agents/${encodeURIComponent(agentId)}/search`, {
+      method: "POST",
+      body: JSON.stringify({ query, ...opts }),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Feedback
+  // -------------------------------------------------------------------------
+
+  /** Rate an assistant reply. Sending it again replaces the previous rating. */
+  async rateMessage(
+    agentId: string,
+    conversationRef: string,
+    messageId: string,
+    feedback: { rating: FeedbackRating; comment?: string },
+  ): Promise<FeedbackResponse> {
+    return this.request<FeedbackResponse>(
+      `/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationRef)}/messages/${encodeURIComponent(messageId)}/feedback`,
+      { method: "POST", body: JSON.stringify(feedback) },
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Models & usage
+  // -------------------------------------------------------------------------
+
+  /** Every model, its price per message and whether your plan can use it. */
+  async listModels(): Promise<ModelsResponse> {
+    return this.request<ModelsResponse>("/models");
+  }
+
+  /** Credit balance and API usage over the last `days` days (1-90, default 30). */
+  async getUsageReport(opts: { days?: number } = {}): Promise<UsageReport> {
+    return this.request<UsageReport>(`/usage${this.queryString({ days: opts.days })}`);
   }
 
   // -------------------------------------------------------------------------

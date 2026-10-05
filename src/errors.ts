@@ -77,6 +77,27 @@ export class ReyGridConflictError extends ReyGridApiError {
 }
 
 /**
+ * Thrown when the request isn't allowed (403): plan limit reached, model not
+ * on your plan, or an API key restricted to other agents or IP addresses.
+ */
+export class ReyGridPermissionError extends ReyGridApiError {
+  constructor(body: ApiError | string) {
+    super(403, body);
+    this.name = "ReyGridPermissionError";
+  }
+}
+
+/**
+ * Thrown when you're rate limited or the key's quota is used up (429).
+ */
+export class ReyGridRateLimitError extends ReyGridApiError {
+  constructor(body: ApiError | string) {
+    super(429, body);
+    this.name = "ReyGridRateLimitError";
+  }
+}
+
+/**
  * Thrown on network-level failures (timeout, DNS, connection refused).
  */
 export class ReyGridNetworkError extends ReyGridError {
@@ -99,17 +120,31 @@ export class ReyGridStreamError extends ReyGridError {
 /**
  * Map an HTTP status code and parsed body to the correct error type.
  */
-export function mapApiError(status: number, body: ApiError | string): ReyGridApiError {
+export function mapApiError(status: number, body: unknown): ReyGridApiError {
+  // Most errors are `{ success: false, error: { code, message } }`; 401s are `{ error, code }`.
+  const nested = (body as { error?: unknown })?.error;
+  const payload = (
+    nested && typeof nested === "object"
+      ? nested
+      : typeof body === "object" && body
+        ? { message: (body as { error?: string }).error, ...body }
+        : body
+  ) as ApiError | string;
+
   switch (status) {
     case 401:
-      return new ReyGridAuthError(body);
+      return new ReyGridAuthError(payload);
     case 400:
-      return new ReyGridValidationError(body);
+      return new ReyGridValidationError(payload);
+    case 403:
+      return new ReyGridPermissionError(payload);
     case 404:
-      return new ReyGridNotFoundError(body);
+      return new ReyGridNotFoundError(payload);
     case 409:
-      return new ReyGridConflictError(body);
+      return new ReyGridConflictError(payload);
+    case 429:
+      return new ReyGridRateLimitError(payload);
     default:
-      return new ReyGridApiError(status, body);
+      return new ReyGridApiError(status, payload);
   }
 }

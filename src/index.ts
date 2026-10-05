@@ -26,6 +26,8 @@ export {
   ReyGridValidationError,
   ReyGridNotFoundError,
   ReyGridConflictError,
+  ReyGridPermissionError,
+  ReyGridRateLimitError,
   ReyGridNetworkError,
   ReyGridStreamError,
 } from "./errors.js";
