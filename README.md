@@ -187,7 +187,7 @@ await client.addQaSource("agent-id", {
   answer: "Yes, to 40 countries. Delivery takes 5 to 10 days.",
 });
 
-// PDF, DOC, DOCX or TXT, up to 30 MB
+// PDF, DOC, DOCX or TXT
 await client.uploadFile("agent-id", await openAsBlob("handbook.pdf"), "handbook.pdf");
 
 // Crawls pages on the same domain; returns when done

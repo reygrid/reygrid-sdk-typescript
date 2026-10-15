@@ -498,7 +498,7 @@ export class ReyGrid {
   }
 
   /**
-   * Upload a PDF, DOC, DOCX or TXT file (up to 30 MB).
+   * Upload a PDF, DOC, DOCX or TXT file.
    *
    * @example
    * ```ts
